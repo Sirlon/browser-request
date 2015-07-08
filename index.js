@@ -12,6 +12,23 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// UMD HEADER START
+(function (root, factory) {
+    if (typeof define === 'function' && define.amd) {
+        // AMD. Register as an anonymous module.
+        define([], factory);
+    } else if (typeof exports === 'object') {
+        // Node. Does not work with strict CommonJS, but
+        // only CommonJS-like enviroments that support module.exports,
+        // like Node.
+        module.exports = factory();
+    } else {
+        // Browser globals (root is window)
+        root.returnExports = factory();
+  }
+}(this, function () {
+// UMD HEADER END
+
 var XHR = XMLHttpRequest
 if (!XHR) throw new Error('missing XMLHttpRequest')
 request.log = {
@@ -34,10 +51,13 @@ function request(options, callback) {
 
   var options_onResponse = options.onResponse; // Save this for later.
 
-  if(typeof options === 'string')
+  if (typeof options === 'string') {
     options = {'uri':options};
-  else
-    options = JSON.parse(JSON.stringify(options)); // Use a duplicate for mutating.
+  } else {
+    var c = function () {};
+    c.prototype = options;
+    options = new c();
+  }
 
   options.onResponse = options_onResponse // And put it back.
 
@@ -71,14 +91,14 @@ function request(options, callback) {
   if(options.json) {
     options.headers.accept = options.headers.accept || 'application/json'
     if(options.method !== 'GET')
-      options.headers['content-type'] = 'application/json'
+      options.headers['Content-Type'] = 'application/json'
 
     if(typeof options.json !== 'boolean')
       options.body = JSON.stringify(options.json)
     else if(typeof options.body !== 'string')
       options.body = JSON.stringify(options.body)
   }
-  
+
   //BEGIN QS Hack
   var serialize = function(obj) {
     var str = [];
@@ -88,7 +108,7 @@ function request(options, callback) {
       }
     return str.join("&");
   }
-  
+
   if(options.qs){
     var qs = (typeof options.qs == 'string')? options.qs : serialize(options.qs);
     if(options.uri.indexOf('?') !== -1){ //no get params
@@ -98,44 +118,64 @@ function request(options, callback) {
     }
   }
   //END QS Hack
-  
+
   //BEGIN FORM Hack
   var multipart = function(obj) {
-    //todo: support file type (useful?)
     var result = {};
-    result.boundry = '-------------------------------'+Math.floor(Math.random()*1000000000);
-    var lines = [];
-    for(var p in obj){
-        if (obj.hasOwnProperty(p)) {
-            lines.push(
-                '--'+result.boundry+"\n"+
-                'Content-Disposition: form-data; name="'+p+'"'+"\n"+
-                "\n"+
-                obj[p]+"\n"
-            );
-        }
+
+    if (!!FormData) {
+      var formData = new FormData();
+      for(var p in obj) {
+        formData.append(p, obj[p]);
+      }
+      result.body = formData;
+      result.type = null; //the xhr must append the content type by himself
+    } else {
+      // The old Methode as a fallback wich does not function when a file is present
+      //
+      result.boundry = '-------------------------------'+Math.floor(Math.random()*1000000000);
+      var lines = [];
+
+      for(var p in obj){
+
+          if (obj.hasOwnProperty(p)) {
+              var ftype = obj[p].name && obj[p].type ? '; filename="' + obj[p].name + '"\nContent-Type: ' + obj[p].type : '';
+              lines.push(
+                  '--'+result.boundry+"\n"+
+                  'Content-Disposition: form-data; name="'+p+'"' + ftype +"\n"+
+                  "\n"+ (!ftype ? obj[p] : '')
+                  +"\n"
+              );
+          }
+      }
+
+      lines.push( '--'+result.boundry+'--' );
+      result.body = lines.join('');
+      result.type = 'multipart/form-data; boundary='+result.boundry;
     }
-    lines.push( '--'+result.boundry+'--' );
-    result.body = lines.join('');
+
     result.length = result.body.length;
-    result.type = 'multipart/form-data; boundary='+result.boundry;
+
     return result;
   }
-  
+
   if(options.form){
+
     if(typeof options.form == 'string') throw('form name unsupported');
-    if(options.method === 'POST'){
+    if(options.method === 'POST' || options.method === 'PUT'){
         var encoding = (options.encoding || 'application/x-www-form-urlencoded').toLowerCase();
-        options.headers['content-type'] = encoding;
+        options.headers['Content-Type'] = encoding;
         switch(encoding){
             case 'application/x-www-form-urlencoded':
                 options.body = serialize(options.form).replace(/%20/g, "+");
                 break;
             case 'multipart/form-data':
+                options.headers.accept = options.headers.accept || 'application/json, text/javascript, */*; q=0.01';
+
                 var multi = multipart(options.form);
                 //options.headers['content-length'] = multi.length;
                 options.body = multi.body;
-                options.headers['content-type'] = multi.type;
+                options.headers['Content-Type'] = multi.type;
                 break;
             default : throw new Error('unsupported encoding:'+encoding);
         }
@@ -209,8 +249,12 @@ function run_xhr(options) {
 
     if(xhr.readyState === XHR.OPENED) {
       request.log.debug('Request started', {'id':xhr.id})
-      for (var key in options.headers)
-        xhr.setRequestHeader(key, options.headers[key])
+      for (var key in options.headers) {
+        if (!!options.headers[key]) {
+          xhr.setRequestHeader(key, options.headers[key]);
+        }
+      }
+
     }
 
     else if(xhr.readyState === XHR.HEADERS_RECEIVED)
@@ -289,10 +333,12 @@ request.DEFAULT_TIMEOUT = DEFAULT_TIMEOUT;
 request.defaults = function(options, requester) {
   var def = function (method) {
     var d = function (params, callback) {
-      if(typeof params === 'string')
+      if(typeof params === 'string') {
         params = {'uri': params};
-      else {
-        params = JSON.parse(JSON.stringify(params));
+      } else {
+        var c = function () {};
+        c.prototype = params;
+        params = new c();
       }
       for (var i in options) {
         if (params[i] === undefined) params[i] = options[i]
@@ -471,4 +517,7 @@ function b64_enc (data) {
 
     return enc;
 }
-module.exports = request;
+    return request;
+//UMD FOOTER START
+}));
+//UMD FOOTER END
